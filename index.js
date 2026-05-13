@@ -8,9 +8,6 @@ const {
 } = require('@discordjs/voice');
 const play = require('play-dl');
 
-// Ambil token dari Environment Variable Railway:
-// Name  : TOKEN
-// Value : token bot Discord kamu
 const TOKEN = process.env.TOKEN;
 
 if (!TOKEN) {
@@ -27,17 +24,12 @@ const client = new Client({
   ]
 });
 
-// Audio player global
 const player = createAudioPlayer({
   behaviors: {
-    // Saat tidak ada subscriber, cukup pause. Bot tetap berada di voice channel.
     noSubscriber: NoSubscriberBehavior.Pause
   }
 });
 
-// =========================
-// Global Error Handlers
-// =========================
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled Rejection:', error);
 });
@@ -54,32 +46,35 @@ player.on('error', (error) => {
   console.error('Audio Player Error:', error.message);
 });
 
-// =========================
-// Bot Ready
-// =========================
 client.once('clientReady', () => {
   console.log(`Bot aktif sebagai ${client.user.tag}`);
 });
 
-// =========================
-// Message Commands
-// =========================
+function connectToVoice(voiceChannel) {
+  const connection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: voiceChannel.guild.id,
+    adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+    selfDeaf: false
+  });
+
+  connection.on('error', (error) => {
+    console.error('Voice Connection Error:', error.message);
+  });
+
+  return connection;
+}
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
 
   const content = message.content.trim();
 
-  // ==========================================
-  // !ping -> Tes apakah bot aktif
-  // ==========================================
   if (content === '!ping') {
     return message.reply('Pong! Bot aktif.');
   }
 
-  // ==========================================
-  // !join -> Bot masuk ke voice channel
-  // ==========================================
   if (content === '!join') {
     const voiceChannel = message.member.voice.channel;
 
@@ -88,27 +83,16 @@ client.on('messageCreate', async (message) => {
     }
 
     const existingConnection = getVoiceConnection(message.guild.id);
+
     if (existingConnection) {
       return message.reply('Bot sudah berada di voice channel.');
     }
 
-    const connection = joinVoiceChannel({
-      channelId: voiceChannel.id,
-      guildId: voiceChannel.guild.id,
-      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-      selfDeaf: false
-    });
-
-    connection.on('error', (error) => {
-      console.error('Voice Connection Error:', error.message);
-    });
+    connectToVoice(voiceChannel);
 
     return message.reply('Bot berhasil masuk ke voice channel.');
   }
 
-  // ==========================================
-  // !play <url> -> Putar musik dari YouTube URL
-  // ==========================================
   if (content.startsWith('!play ')) {
     try {
       const url = content.split(' ')[1];
@@ -118,31 +102,18 @@ client.on('messageCreate', async (message) => {
         return message.reply('Masuk ke voice channel dulu.');
       }
 
-      // Jika bot belum terhubung, hubungkan
       let connection = getVoiceConnection(message.guild.id);
 
       if (!connection) {
-        connection = joinVoiceChannel({
-          channelId: voiceChannel.id,
-          guildId: voiceChannel.guild.id,
-          adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-          selfDeaf: false
-        });
-
-        connection.on('error', (error) => {
-          console.error('Voice Connection Error:', error.message);
-        });
+        connection = connectToVoice(voiceChannel);
       }
 
-      // Ambil stream dari YouTube
       const stream = await play.stream(url);
 
-      // Buat resource audio
       const resource = createAudioResource(stream.stream, {
         inputType: stream.type
       });
 
-      // Putar dan subscribe
       player.play(resource);
       connection.subscribe(player);
 
@@ -155,17 +126,11 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // ==========================================
-  // !stop -> Hentikan musik, bot tetap di voice
-  // ==========================================
   if (content === '!stop') {
     player.stop();
     return message.reply('Musik dihentikan.');
   }
 
-  // ==========================================
-  // !leave -> Bot keluar dari voice channel
-  // ==========================================
   if (content === '!leave') {
     const connection = getVoiceConnection(message.guild.id);
 
@@ -180,5 +145,4 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// Login ke Discord
 client.login(TOKEN);
