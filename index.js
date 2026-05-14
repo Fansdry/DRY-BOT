@@ -7,8 +7,12 @@ const {
   NoSubscriberBehavior
 } = require('@discordjs/voice');
 const play = require('play-dl');
+const fs = require('fs');
+const os = require('os');
 
 const TOKEN = process.env.TOKEN;
+const STATE_FILE = 'voice-state.json';
+const START_TIME = Date.now();
 
 if (!TOKEN) {
   console.error('TOKEN belum diatur pada Environment Variables.');
@@ -30,25 +34,67 @@ const player = createAudioPlayer({
   }
 });
 
-process.on('unhandledRejection', (error) => {
-  console.error('Unhandled Rejection:', error);
-});
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    }
+  } catch (error) {
+    console.error('Load state error:', error);
+  }
+  return {};
+}
 
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-});
+function saveState(state) {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  } catch (error) {
+    console.error('Save state error:', error);
+  }
+}
 
-client.on('error', (error) => {
-  console.error('Discord Client Error:', error);
-});
+function formatBytes(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let value = bytes;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  return `${value.toFixed(2)} ${units[i]}`;
+}
 
-player.on('error', (error) => {
-  console.error('Audio Player Error:', error.message);
-});
+function formatUptime(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
 
-client.once('clientReady', () => {
-  console.log(`Bot aktif sebagai ${client.user.tag}`);
-});
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  parts.push(`${seconds}s`);
+
+  return parts.join(' ');
+}
+
+function getState() {
+  return loadState();
+}
+
+function setVoiceState(guildId, channelId) {
+  const state = getState();
+  state[guildId] = channelId;
+  saveState(state);
+}
+
+function removeVoiceState(guildId) {
+  const state = getState();
+  delete state[guildId];
+  saveState(state);
+}
 
 function connectToVoice(voiceChannel) {
   const connection = joinVoiceChannel({
@@ -65,6 +111,67 @@ function connectToVoice(voiceChannel) {
   return connection;
 }
 
+async function restoreVoiceConnections() {
+  const state = getState();
+
+  for (const guildId of Object.keys(state)) {
+    try {
+      const channelId = state[guildId];
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) continue;
+
+      const channel = guild.channels.cache.get(channelId);
+      if (!channel) continue;
+
+      connectToVoice(channel);
+      console.log(`Rejoined voice channel: ${channel.name}`);
+    } catch (error) {
+      console.error('Restore voice error:', error);
+    }
+  }
+}
+
+function getStatusText() {
+  const mem = process.memoryUsage();
+  const cpu = process.cpuUsage();
+  const uptime = formatUptime(Date.now() - START_TIME);
+
+  return [
+    'Status Bot',
+    `Uptime: ${uptime}`,
+    `Memory RSS: ${formatBytes(mem.rss)}`,
+    `Heap Used: ${formatBytes(mem.heapUsed)} / ${formatBytes(mem.heapTotal)}`,
+    `External: ${formatBytes(mem.external)}`,
+    `CPU User: ${(cpu.user / 1000).toFixed(2)} ms`,
+    `CPU System: ${(cpu.system / 1000).toFixed(2)} ms`,
+    `Platform: ${os.platform()} ${os.release()}`,
+    `Node.js: ${process.version}`,
+    `Hostname: ${os.hostname()}`,
+    `Network Interfaces: ${Object.keys(os.networkInterfaces()).length}`
+  ].join('\n');
+}
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled Rejection:', error);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
+client.on('error', (error) => {
+  console.error('Discord Client Error:', error);
+});
+
+player.on('error', (error) => {
+  console.error('Audio Player Error:', error.message);
+});
+
+client.once('clientReady', async () => {
+  console.log(`Bot aktif sebagai ${client.user.tag}`);
+  await restoreVoiceConnections();
+});
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
@@ -73,6 +180,10 @@ client.on('messageCreate', async (message) => {
 
   if (content === '!ping') {
     return message.reply('Pong! Bot aktif.');
+  }
+
+  if (content === '!status') {
+    return message.reply('```' + getStatusText() + '```');
   }
 
   if (content === '!join') {
@@ -84,11 +195,11 @@ client.on('messageCreate', async (message) => {
 
     const existingConnection = getVoiceConnection(message.guild.id);
 
-    if (existingConnection) {
-      return message.reply('Bot sudah berada di voice channel.');
+    if (!existingConnection) {
+      connectToVoice(voiceChannel);
     }
 
-    connectToVoice(voiceChannel);
+    setVoiceState(message.guild.id, voiceChannel.id);
 
     return message.reply('Bot berhasil masuk ke voice channel.');
   }
@@ -107,6 +218,8 @@ client.on('messageCreate', async (message) => {
       if (!connection) {
         connection = connectToVoice(voiceChannel);
       }
+
+      setVoiceState(message.guild.id, voiceChannel.id);
 
       const stream = await play.stream(url);
 
@@ -140,6 +253,7 @@ client.on('messageCreate', async (message) => {
 
     player.stop();
     connection.destroy();
+    removeVoiceState(message.guild.id);
 
     return message.reply('Bot keluar dari voice channel.');
   }
