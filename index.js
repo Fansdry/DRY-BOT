@@ -53,15 +53,29 @@ function saveState(state) {
   }
 }
 
+function setVoiceState(guildId, channelId) {
+  const state = loadState();
+  state[guildId] = channelId;
+  saveState(state);
+}
+
+function removeVoiceState(guildId) {
+  const state = loadState();
+  delete state[guildId];
+  saveState(state);
+}
+
 function formatBytes(bytes) {
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let i = 0;
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = bytes;
-  while (value >= 1024 && i < units.length - 1) {
+  let index = 0;
+
+  while (value >= 1024 && index < units.length - 1) {
     value /= 1024;
-    i++;
+    index++;
   }
-  return `${value.toFixed(2)} ${units[i]}`;
+
+  return `${value.toFixed(2)} ${units[index]}`;
 }
 
 function formatUptime(ms) {
@@ -80,22 +94,6 @@ function formatUptime(ms) {
   return parts.join(' ');
 }
 
-function getState() {
-  return loadState();
-}
-
-function setVoiceState(guildId, channelId) {
-  const state = getState();
-  state[guildId] = channelId;
-  saveState(state);
-}
-
-function removeVoiceState(guildId) {
-  const state = getState();
-  delete state[guildId];
-  saveState(state);
-}
-
 function connectToVoice(voiceChannel) {
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
@@ -112,7 +110,7 @@ function connectToVoice(voiceChannel) {
 }
 
 async function restoreVoiceConnections() {
-  const state = getState();
+  const state = loadState();
 
   for (const guildId of Object.keys(state)) {
     try {
@@ -121,7 +119,7 @@ async function restoreVoiceConnections() {
       if (!guild) continue;
 
       const channel = guild.channels.cache.get(channelId);
-      if (!channel) continue;
+      if (!channel || !channel.isVoiceBased()) continue;
 
       connectToVoice(channel);
       console.log(`Rejoined voice channel: ${channel.name}`);
@@ -136,6 +134,18 @@ function getStatusText() {
   const cpu = process.cpuUsage();
   const uptime = formatUptime(Date.now() - START_TIME);
 
+  const rssMB = mem.rss / 1024 / 1024;
+  let risk = 'LOW';
+  let warning = 'Bot berjalan stabil. Risiko crash rendah.';
+
+  if (rssMB > 500) {
+    risk = 'HIGH';
+    warning = 'Penggunaan memory sangat tinggi. Potensi crash atau restart meningkat.';
+  } else if (rssMB > 250) {
+    risk = 'MEDIUM';
+    warning = 'Penggunaan memory cukup tinggi. Pantau bot jika uptime terus bertambah.';
+  }
+
   return [
     'Status Bot',
     `Uptime: ${uptime}`,
@@ -147,7 +157,11 @@ function getStatusText() {
     `Platform: ${os.platform()} ${os.release()}`,
     `Node.js: ${process.version}`,
     `Hostname: ${os.hostname()}`,
-    `Network Interfaces: ${Object.keys(os.networkInterfaces()).length}`
+    `Network Interfaces: ${Object.keys(os.networkInterfaces()).length}`,
+    '',
+    'Risk Assessment',
+    `Level: ${risk}`,
+    `Warning: ${warning}`
   ].join('\n');
 }
 
@@ -186,6 +200,11 @@ client.on('messageCreate', async (message) => {
     return message.reply('```' + getStatusText() + '```');
   }
 
+  if (content === '!restart') {
+    await message.reply('Bot sedang direstart...');
+    process.exit(0);
+  }
+
   if (content === '!join') {
     const voiceChannel = message.member.voice.channel;
 
@@ -193,9 +212,7 @@ client.on('messageCreate', async (message) => {
       return message.reply('Masuk ke voice channel dulu.');
     }
 
-    const existingConnection = getVoiceConnection(message.guild.id);
-
-    if (!existingConnection) {
+    if (!getVoiceConnection(message.guild.id)) {
       connectToVoice(voiceChannel);
     }
 
@@ -233,9 +250,7 @@ client.on('messageCreate', async (message) => {
       return message.reply('Sedang memutar musik.');
     } catch (error) {
       console.error('Play Error:', error);
-      return message.reply(
-        'Gagal memutar musik. Pastikan link YouTube valid dan coba lagi.'
-      );
+      return message.reply('Gagal memutar musik. Pastikan link YouTube valid.');
     }
   }
 
