@@ -13,6 +13,8 @@ const os = require('os');
 const TOKEN = process.env.TOKEN;
 const STATE_FILE = 'voice-state.json';
 const START_TIME = Date.now();
+const WATCHDOG_TIMEOUT = 5 * 60 * 1000;
+let lastHeartbeat = Date.now();
 
 if (!TOKEN) {
   console.error('TOKEN belum diatur pada Environment Variables.');
@@ -95,6 +97,9 @@ function formatUptime(ms) {
 }
 
 function connectToVoice(voiceChannel) {
+  const existing = getVoiceConnection(voiceChannel.guild.id);
+  if (existing) return existing;
+
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: voiceChannel.guild.id,
@@ -103,7 +108,7 @@ function connectToVoice(voiceChannel) {
   });
 
   connection.on('error', (error) => {
-    console.error('Voice Connection Error:', error.message);
+    console.error('Voice Connection Error:', error);
   });
 
   return connection;
@@ -177,12 +182,26 @@ client.on('error', (error) => {
   console.error('Discord Client Error:', error);
 });
 
-player.on('error', (error) => {
-  console.error('Audio Player Error:', error.message);
+client.on('raw', () => {
+  lastHeartbeat = Date.now();
 });
+
+player.on('error', (error) => {
+  console.error('Audio Player Error:', error);
+});
+
+setInterval(() => {
+  const diff = Date.now() - lastHeartbeat;
+
+  if (diff > WATCHDOG_TIMEOUT) {
+    console.error('Heartbeat timeout detected. Restarting process...');
+    process.exit(1);
+  }
+}, 60 * 1000);
 
 client.once('clientReady', async () => {
   console.log(`Bot aktif sebagai ${client.user.tag}`);
+  lastHeartbeat = Date.now();
   await restoreVoiceConnections();
 });
 
@@ -202,7 +221,7 @@ client.on('messageCreate', async (message) => {
 
   if (content === '!restart') {
     await message.reply('Bot sedang direstart...');
-    process.exit(0);
+    process.exit(1);
   }
 
   if (content === '!join') {
@@ -212,10 +231,7 @@ client.on('messageCreate', async (message) => {
       return message.reply('Masuk ke voice channel dulu.');
     }
 
-    if (!getVoiceConnection(message.guild.id)) {
-      connectToVoice(voiceChannel);
-    }
-
+    connectToVoice(voiceChannel);
     setVoiceState(message.guild.id, voiceChannel.id);
 
     return message.reply('Bot berhasil masuk ke voice channel.');
@@ -230,12 +246,7 @@ client.on('messageCreate', async (message) => {
         return message.reply('Masuk ke voice channel dulu.');
       }
 
-      let connection = getVoiceConnection(message.guild.id);
-
-      if (!connection) {
-        connection = connectToVoice(voiceChannel);
-      }
-
+      const connection = connectToVoice(voiceChannel);
       setVoiceState(message.guild.id, voiceChannel.id);
 
       const stream = await play.stream(url);
@@ -250,7 +261,9 @@ client.on('messageCreate', async (message) => {
       return message.reply('Sedang memutar musik.');
     } catch (error) {
       console.error('Play Error:', error);
-      return message.reply('Gagal memutar musik. Pastikan link YouTube valid.');
+      return message.reply(
+        'Gagal memutar musik. Pastikan link YouTube valid dan coba lagi.'
+      );
     }
   }
 
